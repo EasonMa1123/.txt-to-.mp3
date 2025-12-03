@@ -13,31 +13,47 @@ def get_character_voice(character):
         '李蘋': "zh-HK-HiuGaaiNeural",  # Female voice 2 for Li Ping
         '爸爸': "zh-HK-WanLungNeural",  # Male voice for father
         '王小明': "zh-HK-HiuGaaiNeural",  # Female voice 1 for Xiao Ming
-        '媽媽': "zh-HK-HiuGaaiNeural"   # Using HiuGaaiNeural for mother instead of YanNeural
+        '媽媽': "zh-HK-HiuYanNeural"   # Using HiuGaaiNeural for mother instead of YanNeural
     }
     return voice_map.get(character, "zh-HK-HiuGaaiNeural")
 
 async def create_voice(text, output_file, voice):
-    """Create a voice file for the given text using edge-tts."""
-    try:
-        # Add rate="-30%" to slow down the speech by 30%
-        communicate = edge_tts.Communicate(text, voice, rate="-30%")
-        await communicate.save(output_file)
-        print(f"Speech synthesis completed for {output_file} using voice {voice}")
-        return True
-    except Exception as e:
-        print(f"Error creating voice for text: {e}")
-        # Try again with a different voice if the first attempt fails
-        if voice == "zh-HK-YanNeural":
-            try:
-                print(f"Retrying with HiuGaaiNeural voice...")
-                communicate = edge_tts.Communicate(text, "zh-HK-HiuGaaiNeural", rate="-30%")
-                await communicate.save(output_file)
-                print(f"Speech synthesis completed for {output_file} using voice zh-HK-HiuGaaiNeural")
-                return True
-            except Exception as e2:
-                print(f"Second attempt also failed: {e2}")
-        return False
+    """Create a voice file for the given text using edge-tts, with retry."""
+    MAX_RETRY = 10
+
+    for attempt in range(1, MAX_RETRY + 1):
+        try:
+            communicate = edge_tts.Communicate(text, voice, rate="-30%")
+            await communicate.save(output_file)
+            print(f"[OK] Created: {output_file}  (Voice={voice})")
+            return True
+
+        except Exception as e:
+            print(f"[ERROR {attempt}] Voice failed ({voice}): {e}")
+
+            # 403 -- likely rate-limit → wait & retry
+            await asyncio.sleep(0.8 * attempt)
+
+            # try fallback Cantonese voices
+            fallback_voices = [
+                "zh-HK-HiuGaaiNeural",
+                "zh-HK-HiuMaanNeural",
+                "zh-HK-WanLungNeural"
+            ]
+
+            for fallback in fallback_voices:
+                if fallback != voice:
+                    try:
+                        print(f"Retrying with fallback: {fallback}")
+                        communicate = edge_tts.Communicate(text, fallback, rate="-30%")
+                        await communicate.save(output_file)
+                        print(f"[OK] Fallback created: {output_file} (Voice={fallback})")
+                        return True
+                    except:
+                        continue
+
+    print(f"[FAILED] Could not synthesize after {MAX_RETRY} attempts.")
+    return False
 
 def combine_audio_files(input_files, output_file):
     """Combine multiple audio files into one."""
