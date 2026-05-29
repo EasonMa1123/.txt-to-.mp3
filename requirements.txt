@@ -2,3 +2,4 @@ edge-tts
 soundfile
 numpy
 pyttsx3
+deep_translator

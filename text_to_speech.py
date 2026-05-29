@@ -5,83 +5,122 @@ import re
 import asyncio
 import edge_tts
 from pathlib import Path
+from deep_translator import GoogleTranslator
 
-def get_character_voice(character):
-    """Get the appropriate voice for each character."""
-    voice_map = {
-        '旁白': "zh-HK-HiuMaanNeural",  # Female voice 1 for narrator
-        '李蘋': "zh-HK-HiuGaaiNeural",  # Female voice 2 for Li Ping
-        '爸爸': "zh-HK-WanLungNeural",  # Male voice for father
-        '王小明': "zh-HK-HiuGaaiNeural",  # Female voice 1 for Xiao Ming
-        '媽媽': "zh-HK-HiuYanNeural"   # Using HiuGaaiNeural for mother instead of YanNeural
-    }
-    return voice_map.get(character, "zh-HK-HiuGaaiNeural")
+# Global registry to hold automatically detected character profiles
+DYNAMIC_VOICE_PROFILES = {}
 
-async def create_voice(text, output_file, voice):
+def analyze_and_register_characters(content):
+    """
+    Scans the script to auto-detect all unique characters and dynamically
+    assigns them a Cantonese voice profile based on age and gender keywords.
+    """
+    global DYNAMIC_VOICE_PROFILES
+    DYNAMIC_VOICE_PROFILES.clear()
+    
+    # Find all unique character names before the "：" separator
+    detected_names = set(re.findall(r'([^：\n]+)：', content))
+    # Remove '旁白' (Narrator) from dynamic assignment since it's a fixed standard
+    detected_names.discard('旁白')
+    
+    print(f"\n[AUTO-DETECT] Found {len(detected_names)} unique characters in script: {list(detected_names)}")
+    
+    # Lists of available base Cantonese neural voices to cycle through
+    female_pool = ["zh-HK-HiuGaaiNeural", "zh-HK-HiuMaanNeural", "zh-HK-HiuYanNeural"]
+    male_pool = ["zh-HK-WanLungNeural"]
+    
+    f_idx, m_idx = 0, 0
+    
+    for name in sorted(list(detected_names)):
+        name_strip = name.strip()
+        
+        # 1. Determine Gender (Default to Female if ambiguous)
+        is_male = any(kw in name_strip for kw in ['爸爸', '爺爺', '公公', '叔', '伯', '仔', '兄', '弟', '男', '豪', '明'])
+        
+        # 2. Determine Age Group (Child, Old, or Default Adult)
+        if any(kw in name_strip for kw in ['仔', '女', '家家', '蘋', '小', '童', '兒']):
+            age = "child"
+        elif any(kw in name_strip for kw in ['爺', '嫲', '婆', '公', '老', '伯']):
+            age = "old"
+        else:
+            age = "adult"
+            
+        # 3. Assign Base Voice and Custom Pitch Adjustments
+        if is_male:
+            # Cycle through male pool (or reuse if pool size exhausted)
+            base_voice = male_pool[m_idx % len(male_pool)]
+            m_idx += 1
+            # Adjust pitch based on age rules
+            pitch = "+45Hz" if age == "child" else ("-25Hz" if age == "old" else "+0Hz")
+        else:
+            base_voice = female_pool[f_idx % len(female_pool)]
+            f_idx += 1
+            # Adjust pitch based on age rules
+            pitch = "+35Hz" if age == "child" else ("-20Hz" if age == "old" else "+0Hz")
+            
+        DYNAMIC_VOICE_PROFILES[name_strip] = {
+            "voice": base_voice,
+            "pitch": pitch,
+            "gender": "Male" if is_male else "Female",
+            "age": age
+        }
+        print(f"  -> Profile Assigned | {name_strip}: Gender={DYNAMIC_VOICE_PROFILES[name_strip]['gender']}, Age={age} -> Voice={base_voice}, Pitch={pitch}")
+
+def get_character_voice_profile(character):
+    """Retrieve the automatically generated profile or fallback to Narrator profile."""
+    if character == '旁白':
+        return {"voice": "zh-HK-HiuMaanNeural", "pitch": "+0Hz"}
+    
+    return DYNAMIC_VOICE_PROFILES.get(character, {"voice": "zh-HK-HiuGaaiNeural", "pitch": "+0Hz"})
+
+def get_character_code(character):
+    """Automatically translates Chinese character names to safe English filename codes."""
+    if character == '旁白':
+        return 'narrator'
+        
+    try:
+        # Translate name to English via a free Google Translate scrap-less layer
+        translated = GoogleTranslator(source='auto', target='en').translate(character)
+        # Clean up string text to make it safe for standard filenames
+        clean_code = re.sub(r'[^a-zA-Z0-True]', '', translated).lower()
+        return clean_code if clean_code else "character"
+    except Exception as e:
+        print(f"[Warning] Translation failed for {character}: {e}. Using raw string hashes.")
+        return str(hash(character))
+
+async def create_voice(text, output_file, voice_profile):
     """Create a voice file for the given text using edge-tts, with retry."""
     MAX_RETRY = 10
+    voice = voice_profile["voice"]
+    pitch = voice_profile["pitch"]
 
     for attempt in range(1, MAX_RETRY + 1):
         try:
-            communicate = edge_tts.Communicate(text, voice, rate="-30%")
+            communicate = edge_tts.Communicate(text, voice, rate="-30%", pitch=pitch)
             await communicate.save(output_file)
-            print(f"[OK] Created: {output_file}  (Voice={voice})")
+            print(f"[OK] Created: {output_file}  (Voice={voice}, Pitch={pitch})")
             return True
-
         except Exception as e:
             print(f"[ERROR {attempt}] Voice failed ({voice}): {e}")
-
-            # 403 -- likely rate-limit → wait & retry
             await asyncio.sleep(0.8 * attempt)
-
-            # try fallback Cantonese voices
-            fallback_voices = [
-                "zh-HK-HiuGaaiNeural",
-                "zh-HK-HiuMaanNeural",
-                "zh-HK-WanLungNeural"
-            ]
-
-            for fallback in fallback_voices:
-                if fallback != voice:
-                    try:
-                        print(f"Retrying with fallback: {fallback}")
-                        communicate = edge_tts.Communicate(text, fallback, rate="-30%")
-                        await communicate.save(output_file)
-                        print(f"[OK] Fallback created: {output_file} (Voice={fallback})")
-                        return True
-                    except:
-                        continue
-
-    print(f"[FAILED] Could not synthesize after {MAX_RETRY} attempts.")
     return False
 
 def combine_audio_files(input_files, output_file):
-    """Combine multiple audio files into one."""
+    """Combine multiple audio files into one using soundfile."""
     try:
         print("\nStarting audio combination process...")
-        print(f"Input files to combine: {input_files}")
-        
-        # Read the first file to get the sample rate
-        print(f"Reading first file: {input_files[0]}")
         data, samplerate = sf.read(input_files[0])
         combined_data = data
-        print(f"First file read successfully. Sample rate: {samplerate}")
         
-        # Read and concatenate the rest of the files
         for i, file in enumerate(input_files[1:], 1):
             try:
-                print(f"\nProcessing file {i+1}/{len(input_files)}: {file}")
                 data, _ = sf.read(file)
-                # Add 0.5 seconds of silence (samplerate/2 samples)
                 silence = np.zeros(int(samplerate * 0.5))
                 combined_data = np.concatenate([combined_data, silence, data])
-                print(f"Successfully added file {file} to combined audio")
             except Exception as e:
                 print(f"Error processing file {file}: {e}")
                 continue
         
-        # Save the combined audio
-        print(f"\nSaving combined audio to {output_file}")
         sf.write(output_file, combined_data, samplerate)
         print(f"Combined audio saved successfully to {output_file}")
         return True
@@ -89,103 +128,65 @@ def combine_audio_files(input_files, output_file):
         print(f"Error combining audio files: {e}")
         return False
 
-def get_character_code(character):
-    """Convert Chinese character names to English codes."""
-    character_map = {
-        '旁白': 'narrator',
-        '李蘋': 'liping',
-        '爸爸': 'father',
-        '王小明': 'xiaoming',
-        '媽媽': 'mother'
-    }
-    return character_map.get(character, character)
-
 async def process_text_file(input_file):
-    """Process the text file and create audio files for each character."""
+    """Process the text file, extract characters dynamically, and generate sequence assets."""
     try:
-        # Create output directory if it doesn't exist
         output_dir = Path('output')
         output_dir.mkdir(exist_ok=True)
 
-        # Remove previous audio files
-        print("Cleaning up previous audio files...")
+        # Cleanup matching legacy audio structures
         for file in output_dir.glob('*.wav'):
             try:
                 file.unlink()
-                print(f"Removed previous file: {file}")
-            except Exception as e:
-                print(f"Error removing file {file}: {e}")
+            except Exception:
+                pass
 
-        # Read the input file
         with open(input_file, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        # Split content into scenes (separated by blank lines)
+        # Step 1: Automatically analyze text to parse out actors & build properties matrix
+        analyze_and_register_characters(content)
+
         scenes = [scene.strip() for scene in content.split('\n\n') if scene.strip()]
-        temp_files = []  # Keep track of temporary files to delete later
+        temp_files = []
         
-        # Process each scene
         for scene_num, scene in enumerate(scenes, 1):
             print(f"\nProcessing Scene {scene_num}")
-            print(f"Scene content:\n{scene}\n")
             
-            # Extract narrator text
-            narrator_text = re.findall(r'旁白：(.*?)(?=\n|$)', scene)
-            if narrator_text:
-                print(f"Found narrator text: {narrator_text[0]}")
-                temp_file = output_dir / f'temp_narrator_{scene_num}_1.wav'
-                if await create_voice(narrator_text[0], str(temp_file), 
-                                   get_character_voice('旁白')):
-                    temp_files.append(temp_file)
-                    print(f"Added narrator file: {temp_file}")
-            
-            # Extract character dialogues
-            dialogues = re.findall(r'([^：]+)：(.*?)(?=\n|$)', scene)
-            print(f"Found {len(dialogues)} dialogues")
-            
-            # Keep track of dialogue count for each character in this scene
+            # Identify individual structural elements lines chronologically 
+            lines = re.findall(r'([^：\n]+)：(.*?)(?=\n|$)', scene)
             char_dialogue_count = {}
             
-            for character, text in dialogues:
+            for character, text in lines:
                 character = character.strip()
-                if character != '旁白':
-                    # Increment dialogue count for this character
-                    char_dialogue_count[character] = char_dialogue_count.get(character, 0) + 1
-                    dialogue_num = char_dialogue_count[character]
-                    
-                    print(f"Processing dialogue {dialogue_num} for {character}: {text}")
-                    char_code = get_character_code(character)
-                    temp_file = output_dir / f'temp_{char_code}_{scene_num}_{dialogue_num}.wav'
-                    if await create_voice(text, str(temp_file), 
-                                       get_character_voice(character)):
-                        temp_files.append(temp_file)
-                        print(f"Added {character} file: {temp_file}")
+                text = text.strip()
+                
+                char_dialogue_count[character] = char_dialogue_count.get(character, 0) + 1
+                dialogue_num = char_dialogue_count[character]
+                
+                char_code = get_character_code(character)
+                temp_file = output_dir / f'temp_{char_code}_{scene_num}_{dialogue_num}.wav'
+                
+                profile = get_character_voice_profile(character)
+                if await create_voice(text, str(temp_file), profile):
+                    temp_files.append(temp_file)
+                
+                await asyncio.sleep(0.4)
         
         if not temp_files:
             print("No audio files were created successfully.")
             return
         
-        print(f"\nTotal files to combine: {len(temp_files)}")
-        print("Files to combine:")
-        for f in temp_files:
-            print(f"  - {f}")
-        
-        # Combine all audio files
-        print("\nCombining all audio files...")
         output_file = output_dir / 'complete_audio.wav'
         if combine_audio_files([str(f) for f in temp_files], str(output_file)):
-            # Clean up temporary files
             for temp_file in temp_files:
                 try:
                     if temp_file.exists():
                         temp_file.unlink()
-                        print(f"Removed temporary file: {temp_file}")
-                except Exception as e:
-                    print(f"Error removing temporary file {temp_file}: {e}")
-            print("Temporary files cleaned up")
-        else:
-            print("Failed to combine audio files.")
-    
+                except Exception:
+                    pass
+            print("Temporary split assets successfully cleared.")
+            
     except Exception as e:
         print(f"Error processing text file: {e}")
 
@@ -195,12 +196,10 @@ async def main():
         if not os.path.exists(input_file):
             print("File not found!")
             return
-        
         await process_text_file(input_file)
-        print("Processing complete! Check the 'output' directory for the complete_audio.wav file.")
-    
+        print("\nProcessing complete! Check 'output/complete_audio.wav'")
     except Exception as e:
         print(f"An error occurred: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())
