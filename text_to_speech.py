@@ -19,7 +19,7 @@ def analyze_and_register_characters(content):
     DYNAMIC_VOICE_PROFILES.clear()
     
     # Find all unique character names before the "：" separator
-    detected_names = set(re.findall(r'([^：\n]+)：', content))
+    detected_names = set(re.findall(r'([^\n：:]+?)\s*[：:]', content))
     # Remove '旁白' (Narrator) from dynamic assignment since it's a fixed standard
     detected_names.discard('旁白')
     
@@ -154,7 +154,7 @@ async def process_text_file(input_file):
             print(f"\nProcessing Scene {scene_num}")
             
             # Identify individual structural elements lines chronologically 
-            lines = re.findall(r'([^：\n]+)：(.*?)(?=\n|$)', scene)
+            lines = re.findall(r'([^\n：:]+?)\s*[：:]\s*(.*?)(?=\n|$)', scene)
             char_dialogue_count = {}
             
             for character, text in lines:
