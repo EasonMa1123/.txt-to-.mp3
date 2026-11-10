@@ -10,7 +10,30 @@ from deep_translator import GoogleTranslator
 # Global registry to hold automatically detected character profiles
 DYNAMIC_VOICE_PROFILES = {}
 
-def analyze_and_register_characters(content):
+async def get_available_voice_pools():
+    """Fetch the currently available Hong Kong Cantonese voices by gender."""
+    voices = await edge_tts.list_voices()
+    female_pool = [
+        voice["ShortName"]
+        for voice in voices
+        if voice.get("Locale") == "zh-HK" and voice.get("Gender") == "Female"
+    ]
+    male_pool = [
+        voice["ShortName"]
+        for voice in voices
+        if voice.get("Locale") == "zh-HK" and voice.get("Gender") == "Male"
+    ]
+
+    if not female_pool or not male_pool:
+        raise RuntimeError(
+            "Could not find both female and male zh-HK voices in the available voice list."
+        )
+
+    print(f"[VOICES] Available female zh-HK voices: {female_pool}")
+    print(f"[VOICES] Available male zh-HK voices: {male_pool}")
+    return female_pool, male_pool
+
+def analyze_and_register_characters(content, female_pool, male_pool):
     """
     Scans the script to auto-detect all unique characters and dynamically
     assigns them a Cantonese voice profile based on age and gender keywords.
@@ -24,10 +47,6 @@ def analyze_and_register_characters(content):
     detected_names.discard('旁白')
     
     print(f"\n[AUTO-DETECT] Found {len(detected_names)} unique characters in script: {list(detected_names)}")
-    
-    # Lists of available base Cantonese neural voices to cycle through
-    female_pool = ["zh-HK-HiuGaaiNeural", "zh-HK-HiuMaanNeural", "zh-HK-HiuYanNeural"]
-    male_pool = ["zh-HK-WanLungNeural"]
     
     f_idx, m_idx = 0, 0
     
@@ -66,12 +85,19 @@ def analyze_and_register_characters(content):
         }
         print(f"  -> Profile Assigned | {name_strip}: Gender={DYNAMIC_VOICE_PROFILES[name_strip]['gender']}, Age={age} -> Voice={base_voice}, Pitch={pitch}")
 
-def get_character_voice_profile(character):
+def get_character_voice_profile(character, female_pool):
     """Retrieve the automatically generated profile or fallback to Narrator profile."""
     if character == '旁白':
-        return {"voice": "zh-HK-HiuMaanNeural", "pitch": "+0Hz"}
+        narrator_voice = (
+            "zh-HK-HiuMaanNeural"
+            if "zh-HK-HiuMaanNeural" in female_pool
+            else female_pool[0]
+        )
+        return {"voice": narrator_voice, "pitch": "+0Hz"}
     
-    return DYNAMIC_VOICE_PROFILES.get(character, {"voice": "zh-HK-HiuGaaiNeural", "pitch": "+0Hz"})
+    return DYNAMIC_VOICE_PROFILES.get(
+        character, {"voice": female_pool[0], "pitch": "+0Hz"}
+    )
 
 def get_character_code(character):
     """Automatically translates Chinese character names to safe English filename codes."""
@@ -91,6 +117,7 @@ def get_character_code(character):
 async def create_voice(text, output_file, voice_profile):
     """Create a voice file for the given text using edge-tts, with retry."""
     MAX_RETRY = 10
+    #print(f'{text},{output_file},{voice_profile}')
     voice = voice_profile["voice"]
     pitch = voice_profile["pitch"]
 
@@ -130,6 +157,8 @@ def combine_audio_files(input_files, output_file):
 
 async def process_text_file(input_file):
     """Process the text file, extract characters dynamically, and generate sequence assets."""
+    female_pool, male_pool = await get_available_voice_pools()
+
     try:
         output_dir = Path('output')
         output_dir.mkdir(exist_ok=True)
@@ -145,7 +174,7 @@ async def process_text_file(input_file):
             content = f.read()
 
         # Step 1: Automatically analyze text to parse out actors & build properties matrix
-        analyze_and_register_characters(content)
+        analyze_and_register_characters(content, female_pool, male_pool)
 
         scenes = [scene.strip() for scene in content.split('\n\n') if scene.strip()]
         temp_files = []
@@ -167,7 +196,7 @@ async def process_text_file(input_file):
                 char_code = get_character_code(character)
                 temp_file = output_dir / f'temp_{char_code}_{scene_num}_{dialogue_num}.wav'
                 
-                profile = get_character_voice_profile(character)
+                profile = get_character_voice_profile(character, female_pool)
                 if await create_voice(text, str(temp_file), profile):
                     temp_files.append(temp_file)
                 

@@ -55,6 +55,6 @@ The script will create:
 ## Notes
 
 - The script uses Microsoft Edge's Text-to-Speech service (edge-tts) for voice generation
-- The voice is set to Cantonese (zh-HK-HiuGaaiNeural)
+- The script checks the currently available Hong Kong Cantonese (`zh-HK`) voices at startup and assigns voices by gender
 - All dialogues are combined into a single WAV file
 - No API key or account required - completely free to use! 
